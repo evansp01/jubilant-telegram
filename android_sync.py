@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 
 import os
-from pydub import AudioSegment
-from collections import defaultdict as dd
 import multiprocessing
 import ffprobe
+import ffmpeg
 import shutil
 import argparse
 
+
 def format_size(num, suffix='B'):
     """ Function to display file sizes in a human readable format """
-    for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
+    for unit in ['', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi', 'Ei', 'Zi']:
         if abs(num) < 1024.0:
             return "%3.1f%s%s" % (num, unit, suffix)
         num /= 1024.0
-    return "%.1f%s%s" % (num, 'Yi', suffix)
+        return "%.1f%s%s" % (num, 'Yi', suffix)
 
 
 class Progress:
@@ -25,7 +25,7 @@ class Progress:
 
     def update(self, inc=1):
         self.counter += inc
-        print("\r"+self.format.format(self.counter), end="")
+        print("\r" + self.format.format(self.counter), end="")
 
     def finish(self):
         print(' Done.')
@@ -38,7 +38,7 @@ class SyncFile:
     def __init__(self, path, from_path):
         self.path = path
         self.from_path = from_path
-        info = ffprobe.ffprobe(from_path)
+        info = ffprobe.probe(from_path)
         if info:
             self._streams = info['streams']
             self._format = info['format']
@@ -48,7 +48,7 @@ class SyncFile:
 
     def ext(self):
         name, ext = os.path.splitext(self.path)
-        return ext.replace('.','')
+        return ext.replace('.', '')
 
     def has_audio(self):
         for stream in self._streams:
@@ -80,15 +80,16 @@ class SyncFile:
             return int(self._format['duration'])
         return None
 
+
 class AndroidSync:
 
     ENCODINGS = {'mp3', 'flac', 'wav', 'aac', 'ogg', 'flv'}
 
-    def __init__(self, from_root, to_root, format='mp3', bitrate='192k'):
+    def __init__(self, from_root, to_root, format='mp3', quality=None):
         self.from_root = os.path.abspath(from_root)
         self.to_root = os.path.abspath(to_root)
         self.format = format
-        self.bitrate = bitrate
+        self.quality = quality
         self.synclist = []
 
     def sync(self):
@@ -104,13 +105,15 @@ class AndroidSync:
                 relpath = os.path.relpath(from_path, self.from_root)
                 pathlist.append((relpath, from_path))
                 progress.update()
-        total = progress.finish()
+                total = progress.finish()
+
         # analyze each file in the path list
-        progress = Progress("Analyzed {} of " + str(total) + " files.", 0)
+        progress = Progress("Analyzed {} of " +
+                            str(total) + " files.", 0)
         for relpath, from_path in pathlist:
             self.analyze_file(relpath, from_path)
             progress.update()
-        progress.finish()
+            progress.finish()
 
     def analyze_file(self, relpath, from_path):
         sf = SyncFile(relpath, from_path)
@@ -118,47 +121,35 @@ class AndroidSync:
             self.synclist.append(sf)
 
     def sync_all(self):
-        progress= Progress("Syncing file {} of " + str(len(self.synclist)), 0)
+        progress = Progress("Syncing file {} of " + str(len(self.synclist)), 0)
         pool = multiprocessing.Pool()
         for _ in enumerate(pool.imap_unordered(self.sync_file, self.synclist)):
             progress.update()
-        progress.finish()
+            progress.finish()
 
     def sync_file(self, syncfile):
         from_path = self.from_path(syncfile.path)
         to_path = self.to_path(syncfile.path)
         to_dir = os.path.dirname(to_path)
+        print("{} -> {}".format(from_path, to_path))
         # if the file we want to create exists, then do nothing
         if os.path.exists(to_path):
             return
         # if not all subdirectorys exist, create them
         if not os.path.exists(to_dir):
             os.makedirs(to_dir)
-        # attempt to convert the audio
+            # attempt to convert the audio
         if syncfile.format() == self.format:
-            if syncfile.bitrate() <= self.bitrate:
-                self.copy_file(from_path, to_path)
-            else:
-                self.convert_file(from_path, to_path, self.bitrate,
-                                  syncfile.format(), self.format)
-        else: # different formats
-            if syncfile.bitrate() <= self.bitrate:
-                self.convert_file(from_path, to_path, syncfile.bitrate(),
-                                  syncfile.format(), self.format)
-            else:
-                self.convert_file(from_path, to_path, self.bitrate,
-                                  syncfile.format(), self.format)
+            self.copy_file(from_path, to_path)
+        else:  # different formats
+            self.convert_file(from_path, to_path, self.quality)
 
     def copy_file(self, from_path, to_path):
         shutil.copy_file(from_path, to_path)
 
-    def convert_file(self, from_path, to_path, bitrate, from_format, to_format):
+    def convert_file(self, from_path, to_path, quality):
         try:
-            audio = AudioSegment.from_file(from_path, format=from_format)
-        except Exception as e:
-            print("Could not open file as audio: {}".format(e))
-        try:
-            audio.export(to_path, format=to_format, bitrate=str(bitrate))
+            ffmpeg.convert(from_path, to_path, quality=quality)
         except Exception as e:
             print("Failed to export file: {}".format(e))
 
@@ -173,20 +164,19 @@ class AndroidSync:
 
 def get_arguments():
     OUTPUT_FORMATS = {'mp3', 'ogg'}
-    OUTPUT_BITRATES = {64, 80, 128, 160, 192}
+    OUTPUT_BITRATES = set(range(1, 11))
     parser = argparse.ArgumentParser(description='Batch convert mp3 files')
-    parser.add_argument('-f','--format', metavar='EXT', nargs=1,
+    parser.add_argument('-f', '--format', metavar='EXT', nargs=1,
                         choices=OUTPUT_FORMATS,
                         help="format to convert to",
                         required=True)
-    parser.add_argument('-b','--bitrate', metavar='NUM', nargs=1, type=int,
+    parser.add_argument('-q', '--quality', metavar='NUM', nargs=1, type=int,
                         choices=OUTPUT_BITRATES,
-                        help="format to convert to",
-                        required=True)
-    parser.add_argument('-i','--input', metavar='PATH', nargs=1,
+                        help="format to convert to")
+    parser.add_argument('-i', '--input', metavar='PATH', nargs=1,
                         help="folder to sync to device",
                         required=True)
-    parser.add_argument('-o','--output', metavar='PATH', nargs=1,
+    parser.add_argument('-o', '--output', metavar='PATH', nargs=1,
                         help="device location to sync to",
                         required=True)
     return parser.parse_args()
@@ -196,10 +186,12 @@ if __name__ == '__main__':
     args = get_arguments()
     in_dir = args.input[0]
     out_dir = args.output[0]
-    bitrate = args.bitrate[0]
+    if args.quality:
+        quality = args.quality[0]
+    else:
+        quality = None
     format = args.format[0]
-    print("Syncing music from {} to {}. Converting to {}k {}"
-          .format(in_dir, out_dir, bitrate, format))
-    sync = AndroidSync(in_dir, out_dir, bitrate=bitrate*1024, format=format)
+    print("Syncing music from {} to {}. Converting to {} quality {}"
+          .format(in_dir, out_dir, format, quality))
+    sync = AndroidSync(in_dir, out_dir, quality=quality, format=format)
     sync.sync()
-

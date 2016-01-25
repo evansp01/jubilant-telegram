@@ -6,7 +6,7 @@ command = ["ffprobe", "-v", "quiet", "-show_format", "-show_streams",
            "-print_format", "json"]
 
 
-def ffprobe(filename):
+def probe(filename):
     probe = subprocess.Popen(command + [filename],
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              universal_newlines=True)
@@ -18,4 +18,4 @@ def ffprobe(filename):
     return info
 
 if __name__ == '__main__':
-    print(json.dumps(ffprobe(sys.argv[1]), indent=4))
+    print(json.dumps(probe(sys.argv[1]), indent=4))
