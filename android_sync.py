@@ -19,7 +19,7 @@ def format_size(num, suffix='B'):
 
 class Progress:
 
-    def __init__(self, format, initial):
+    def __init__(self, format, initial=0):
         self.format = format
         self.counter = initial
 
@@ -98,40 +98,45 @@ class AndroidSync:
 
     def analyze(self):
         pathlist = []
-        progress = Progress("Found {} files.", 0)
+        progress = Progress("Found {} files.")
         for root, _, files in os.walk(self.from_root):
             for fn in files:
                 from_path = os.path.join(root, fn)
                 relpath = os.path.relpath(from_path, self.from_root)
                 pathlist.append((relpath, from_path))
                 progress.update()
-                total = progress.finish()
+
+        total = progress.finish()
 
         # analyze each file in the path list
-        progress = Progress("Analyzed {} of " +
-                            str(total) + " files.", 0)
-        for relpath, from_path in pathlist:
-            self.analyze_file(relpath, from_path)
+        progress = Progress("Analyzed {} of " + str(total) + " files.")
+        pool = multiprocessing.Pool()
+        for sf in pool.imap_unordered(self.analyze_file, pathlist):
+            # if the imap returned a file to be synced, add it to the list
+            if sf:
+                self.synclist.append(sf)
             progress.update()
-            progress.finish()
+        progress.finish()
 
-    def analyze_file(self, relpath, from_path):
+    def analyze_file(self, path_info):
+        relpath, from_path = path_info
         sf = SyncFile(relpath, from_path)
+        # only return if the file should be synced
         if sf.ext() in self.ENCODINGS:
-            self.synclist.append(sf)
+            return sf
+        return None
 
     def sync_all(self):
-        progress = Progress("Syncing file {} of " + str(len(self.synclist)), 0)
+        progress = Progress("Syncing file {} of " + str(len(self.synclist)))
         pool = multiprocessing.Pool()
-        for _ in enumerate(pool.imap_unordered(self.sync_file, self.synclist)):
+        for _ in pool.imap_unordered(self.sync_file, self.synclist):
             progress.update()
-            progress.finish()
+        progress.finish()
 
     def sync_file(self, syncfile):
         from_path = self.from_path(syncfile.path)
         to_path = self.to_path(syncfile.path)
         to_dir = os.path.dirname(to_path)
-        print("{} -> {}".format(from_path, to_path))
         # if the file we want to create exists, then do nothing
         if os.path.exists(to_path):
             return
